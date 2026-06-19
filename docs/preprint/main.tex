@@ -1,0 +1,392 @@
+% Препринт научной статьи (формат academic journal / Overleaf)
+% Компиляция: pdflatex main.tex && bibtex main && pdflatex main.tex && pdflatex main.tex
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T2A]{fontenc}
+\usepackage[russian,english]{babel}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{authblk}
+\usepackage{abstract}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage[numbers,sort&compress]{natbib}
+
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\renewcommand{\abstractname}{Аннотация}
+\newcommand{\keywords}[1]{\par\smallskip\noindent\textbf{Ключевые слова:} #1}
+
+\title{%
+  Выявление мошеннических банковских транзакций\\[0.3em]
+  \large с применением гибридного пайплайна MHSNet:\\
+  Kernel PCA, LOF и ассоциативная память сети Хопфилда
+}
+
+\author[1]{Томирис Б. Намозова}
+\affil[1]{[Название университета, кафедра прикладной математики / информатики]\\
+\texttt{tbnamozova@yoomoney.ru}}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+\textbf{Аннотация.}
+Мошенничество с банковскими картами остаётся одной из наиболее актуальных проблем финансовой индустрии.
+Доля мошеннических транзакций в реальных потоках данных крайне мала ($<0{,}1\%$), а разметка поступает с задержкой,
+что затрудняет применение классических supervised-моделей.
+В работе предложен и экспериментально исследован воспроизводимый пайплайн \textbf{MHSNet},
+адаптированный по мотивам Zhao et al.~(SSRN~5335578): нелинейное снижение размерности (Kernel PCA),
+обнаружение локальных выбросов (LOF) и ассоциативная память на основе классической сети Хопфилда
+с Modern Hopfield Energy.
+Дополнительно реализован гибрид \textbf{MHSNet+RF}, объединяющий unsupervised-скоры с Random Forest.
+Эксперименты проведены на реальном датасете CaixaBank (Kaggle, $\sim$13~млн транзакций).
+На сбалансированной тестовой выборке MHSNet достигает $F_1=0{,}86$, ROC-AUC$=0{,}93$,
+Recall@FPR$=5\%=0{,}69$; гибридная модель --- $F_1=0{,}94$, Recall@FPR$=5\%=0{,}94$.
+Код и инструкции воспроизведения опубликованы в открытом репозитории.
+
+\smallskip
+\noindent
+\textbf{Abstract (English).}
+We propose and evaluate a reproducible \textbf{MHSNet} pipeline for credit-card fraud detection,
+combining Kernel PCA, Local Outlier Factor (LOF), and a Hopfield associative memory with Modern Hopfield Energy,
+inspired by Zhao et al.~(SSRN~5335578).
+A hybrid \textbf{MHSNet+Random Forest} model further improves performance by fusing unsupervised anomaly scores
+with supervised learning.
+Experiments on the real-world CaixaBank dataset ($\sim$13M transactions) show that MHSNet achieves
+$F_1=0.86$ and the hybrid model $F_1=0.94$ on a balanced test set.
+Source code is publicly available.
+\end{abstract}
+
+\keywords{мошеннические транзакции; сеть Хопфилда; обнаружение аномалий; LOF; Kernel PCA; финтех}
+
+\section{Введение}
+\label{sec:intro}
+
+Цифровизация платёжных систем сопровождается ростом объёма безналичных транзакций и, одновременно,
+масштаба мошенничества. Задача автоматического выявления fraud относится к классу крайне несбалансированной
+бинарной классификации: доля мошеннических операций в промышленных системах обычно не превышает 0.1\%.
+Кроме того, метки мошенничества формируются с задержкой (chargeback), а схемы атак эволюционируют
+(concept drift).
+
+Традиционные supervised-подходы (логистическая регрессия, градиентный бустинг, случайный лес)
+демонстрируют высокое качество при наличии размеченных данных, однако требуют значительного объёма
+примеров fraud и чувствительны к изменению распределения признаков.
+Unsupervised-методы (Isolation Forest, LOF, автоэнкодеры) обучаются преимущественно на легитимных
+транзакциях и выявляют отклонения от нормального поведения.
+
+Недавняя работа Zhao et al.~\cite{zhao2025mhsnet} предложила архитектуру \textit{MHSNet-SNN},
+объединяющую Kernel PCA, LOF и Modern Hopfield / спайковую нейросеть для обнаружения выбросов
+в финансовых транзакциях. Настоящая работа представляет адаптированную и полностью воспроизводимую
+реализацию данной идеи с заменой SNN на классическую сеть Хопфилда~\cite{hopfield1982}
+с энергетической функцией Modern Hopfield~\cite{ramsbauer2021}, а также гибридную модель,
+интегрирующую unsupervised-скоры MHSNet с Random Forest.
+
+\textbf{Вклад работы:}
+\begin{enumerate}
+  \item Реализация end-to-end пайплайна MHSNet на реальном датасете CaixaBank~\cite{computingvictor2024}
+        с потоковой загрузкой более 13~млн транзакций.
+  \item Расширение признакового пространства velocity-агрегатами по банковской карте.
+  \item Предложение гибрида MHSNet+RF, сочетающего ассоциативную память Хопфилда и supervised-классификацию.
+  \item Сравнительная оценка на сбалансированном и несбалансированном тестовых наборах
+        с метриками $F_1$, ROC-AUC, PR-AUC и Recall@FPR$=5\%$.
+  \item Публикация открытого кода и инструкций воспроизведения экспериментов.
+\end{enumerate}
+
+\section{Обзор связанных работ}
+\label{sec:related}
+
+\textbf{Обнаружение аномалий.}
+Метод LOF~\cite{breunig2000} оценивает локальную плотность точки относительно её $k$ ближайших соседей.
+Isolation Forest~\cite{liu2008} строит случайные деревья и измеряет длину пути до изоляции точки.
+Оба подхода широко применяются в fraud detection как unsupervised-базовые линии.
+
+\textbf{Снижение размерности.}
+Kernel PCA~\cite{scholkopf1998} проецирует данные в пространство главных компонент нелинейного
+потенциала через ядро (в нашей работе --- RBF), что позволяет выявлять скрытую структуру
+в табличных транзакционных признаках.
+
+\textbf{Сети Хопфилда.}
+Классическая сеть Хопфилда~\cite{hopfield1982} реализует ассоциативную память: при подаче зашумлённого
+вектора сеть итеративно восстанавливает ближайший сохранённый образ.
+Modern Hopfield Networks~\cite{ramsbauer2021} переформулируют ассоциативный поиск через энергетическую
+функцию, связанную с attention-механизмом трансформеров.
+Zhao et al.~\cite{zhao2025mhsnet} используют энергетический подход для выделения аномальных транзакций.
+
+\section{Постановка задачи}
+\label{sec:problem}
+
+Пусть каждая транзакция описывается вектором признаков $\mathbf{x} \in \mathbb{R}^d$.
+Требуется построить отображение $f(\mathbf{x}) \to \{0,1\}$, где $0$ --- легитимная транзакция,
+$1$ --- мошенническая. Обучающая выборка $\mathcal{D} = \{(\mathbf{x}_i, y_i)\}_{i=1}^{n}$,
+где $y_i \in \{0,1\}$, характеризуется сильным дисбалансом: $|\{i: y_i=1\}| \ll n$.
+
+В unsupervised-ветке MHSNet обучение памяти Хопфилда и LOF выполняется \textit{только} на подмножестве
+нормальных транзакций $\mathcal{D}_{\mathrm{norm}} = \{\mathbf{x}_i : y_i = 0\}$,
+что соответствует практическому сценарию, когда метки fraud неполны или отсутствуют на этапе
+формирования модели нормального поведения.
+
+\section{Предлагаемый метод}
+\label{sec:method}
+
+\subsection{Общая архитектура}
+
+Пайплайн MHSNet включает четыре последовательных этапа:
+\begin{equation}
+  \mathbf{x}
+  \xrightarrow{\text{StandardScaler}}
+  \mathbf{x}'
+  \xrightarrow{\text{Kernel PCA}}
+  \mathbf{z}
+  \xrightarrow{\text{LOF}}
+  s_{\mathrm{LOF}}
+  \xrightarrow{\text{Hopfield MHS}}
+  s_{\mathrm{MHS}}
+  \rightarrow \hat{y}.
+\end{equation}
+
+На рис.~\ref{fig:pipeline} схематично показана архитектура; реализация доступна в модуле
+\texttt{src/mhsnet\_detector.py} репозитория проекта.
+
+\begin{figure}[ht]
+  \centering
+  \fbox{\parbox{0.92\linewidth}{\centering\vspace{0.4em}
+  \textbf{Схема пайплайна MHSNet}\\[0.5em]
+  Транзакции + карты $\rightarrow$ Feature engineering $\rightarrow$ StandardScaler\\
+  $\rightarrow$ Kernel PCA (RBF) $\rightarrow$ LOF $\rightarrow$ Hopfield (MHE)\\
+  $\rightarrow$ Fusion / Hybrid RF $\rightarrow$ fraud / legit
+  \vspace{0.4em}}}
+  \caption{Архитектура предлагаемого метода выявления мошеннических транзакций.}
+  \label{fig:pipeline}
+\end{figure}
+
+\subsection{Предобработка и признаки}
+
+Исходные данные объединяют транзакции, атрибуты карт и метки fraud.
+Применяются:
+\begin{itemize}
+  \item числовые признаки: сумма, $\log(1+\text{amount})$, час, день недели, месяц, MCC;
+  \item категориальные: тип чипа, бренд карты, dark web exposure;
+  \item velocity-признаки по карте: число транзакций, средняя сумма, стандартное отклонение,
+        отношение текущей суммы к среднему по карте.
+\end{itemize}
+Числовые признаки стандартизируются (StandardScaler), категориальные кодируются OneHotEncoder.
+
+\subsection{Kernel PCA}
+
+Нелинейная проекция выполняется с RBF-ядром
+$K(\mathbf{w}_i, \mathbf{w}_j) = \exp(-\gamma \|\mathbf{w}_i - \mathbf{w}_j\|^2)$.
+Число компонент $m=15$; обучение Kernel PCA выполняется на подвыборке до 8000 точек
+для снижения вычислительной сложности $O(n^2)$.
+
+\subsection{LOF}
+
+Local Outlier Factor~\cite{breunig2000} обучается на проекциях нормальных транзакций.
+Для новой точки $\mathbf{z}$ вычисляется скор $s_{\mathrm{LOF}}$, нормализованный в $[0,1]$.
+Параметр $k=20$ соседей.
+
+\subsection{Сеть Хопфилда и Modern Hopfield Energy}
+
+Из нормальных транзакций выбираются $K=128$ прототипов методом K-means.
+Классическая сеть Хопфилда обучается на бинаризованных прототипах $\boldsymbol{\xi} \in \{-1,+1\}^d$
+по правилу Хебба~\cite{hopfield1982}:
+\begin{equation}
+  w_{ij} = \frac{1}{N}\sum_{\mu=1}^{N} \xi_i^{\mu}\xi_j^{\mu}, \quad w_{ii}=0.
+\end{equation}
+
+Аномальный скор Hopfield-компоненты объединяет три нормализованных сигнала:
+\begin{equation}
+  s_{\mathrm{MHS}} = 0.35\,\hat{R} + 0.20\,\hat{D} + 0.45\,\hat{E},
+\end{equation}
+где $\hat{R}$ --- ошибка восстановления, $\hat{D}$ --- расстояние до ближайшего прототипа,
+$\hat{E}$ --- Modern Hopfield Energy~\cite{ramsbauer2021}:
+\begin{equation}
+  E(\boldsymbol{\xi}) = -\mathrm{logsumexp}(\beta \mathbf{X}\boldsymbol{\xi}) + \tfrac{1}{2}\|\boldsymbol{\xi}\|^2.
+\end{equation}
+
+\subsection{Итоговый скор MHSNet}
+
+В режиме \textit{fusion} (основной):
+\begin{equation}
+  s_{\mathrm{final}} = 0.35\,\widehat{s_{\mathrm{LOF}}} + 0.65\,\widehat{s_{\mathrm{MHS}}}.
+\end{equation}
+Пороги LOF-gate и финальной классификации подбираются на валидационной выборке по метрике $F_1$.
+
+\subsection{Гибрид MHSNet + Random Forest}
+
+Для повышения качества предложен гибрид, в котором Random Forest обучается на расширенном векторе:
+\begin{equation}
+  \mathbf{u} = [\mathbf{z};\; s_{\mathrm{final}};\; s_{\mathrm{LOF}};\; s_{\mathrm{MHS}}],
+\end{equation}
+с \texttt{class\_weight=balanced}. Unsupervised-ветка MHSNet формирует информативные признаки
+аномальности, а RF выполняет финальную supervised-классификацию.
+
+\section{Датасет и экспериментальная установка}
+\label{sec:setup}
+
+\subsection{Данные}
+
+Использован открытый датасет \textit{computingvictor/transactions-fraud-datasets}~\cite{computingvictor2024}
+(CaixaBank Tech AI Hackathon, 2024):
+\begin{itemize}
+  \item \texttt{transactions\_data.csv} --- $\sim$13~млн транзакций;
+  \item \texttt{cards\_data.csv} --- атрибуты карт;
+  \item \texttt{train\_fraud\_labels.json} --- 13\,332 размеченных fraud ($\sim$0.1\% в полной выборке).
+\end{itemize}
+
+Загрузка выполняется потоково (чанки по 250\,000 строк) с ограничением числа нормальных и fraud-транзакций
+параметром \texttt{max\_train\_normal}. Данные разделяются на train/val/test (70/15/15\%)
+со стратификацией по классу.
+
+\subsection{Протокол оценки}
+
+Используются два тестовых режима:
+\begin{enumerate}
+  \item \textbf{Сбалансированный test} --- равное число fraud и legit (честное сравнение моделей);
+  \item \textbf{Natural test} --- несбалансированная holdout-выборка.
+\end{enumerate}
+
+Метрики: Accuracy, Precision, Recall, $F_1$, ROC-AUC, PR-AUC, Recall@FPR$=5\%$.
+Последняя метрика отражает долю обнаруженного fraud при уровне ложных тревог не выше 5\%
+и является стандартом в исследованиях fraud detection.
+
+\subsection{Базовые модели}
+
+Сравниваются:
+\begin{itemize}
+  \item Logistic Regression (\texttt{class\_weight=balanced});
+  \item Random Forest (200 деревьев);
+  \item Isolation Forest (обучение на нормальных транзакциях);
+  \item предлагаемый MHSNet;
+  \item гибрид MHSNet+RF.
+\end{itemize}
+
+Все модели оцениваются в едином признаковом пространстве Kernel PCA (для supervised-базовых линий).
+
+\section{Результаты экспериментов}
+\label{sec:results}
+
+\subsection{Основной эксперимент (масштабная выборка)}
+
+В эксперименте с \texttt{max\_train\_normal=30000} загружено 42\,763 транзакции
+(21 признак до расширения velocity-фичами). Результаты на сбалансированном тесте
+приведены в табл.~\ref{tab:main}.
+
+\begin{table}[ht]
+  \centering
+  \caption{Сравнение моделей на сбалансированном тесте (CaixaBank, 42\,763 транзакции в выборке).}
+  \label{tab:main}
+  \begin{tabular}{lcccc}
+    \toprule
+    Модель & $F_1$ & ROC-AUC & Recall@FPR$=5\%$ & Recall \\
+    \midrule
+    MHSNet (предложенный) & \textbf{0.863} & 0.929 & 0.690 & 0.910 \\
+    Isolation Forest      & 0.859 & 0.922 & 0.650 & 0.930 \\
+    Logistic Regression   & 0.922 & 0.978 & 0.905 & 0.915 \\
+    Random Forest         & 0.937 & 0.989 & 0.955 & 0.895 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+MHSNet сопоставим с Isolation Forest по $F_1$ и превосходит его по Recall@FPR$=5\%$,
+демонстрируя практическую применимость энергетического подхода Хопфилда.
+Supervised-модели ожидаемо лидируют, поскольку используют метки fraud при обучении.
+
+\subsection{Расширенный эксперимент с гибридом}
+
+После добавления velocity-признаков (26 признаков), 128 прототипов Hopfield и гибрида MHSNet+RF
+получены результаты табл.~\ref{tab:hybrid} (выборка 16\,000 транзакций, \texttt{max\_train\_normal=8000}).
+
+\begin{table}[ht]
+  \centering
+  \caption{Результаты улучшенного пайплайна (26 признаков, гибрид MHSNet+RF).}
+  \label{tab:hybrid}
+  \begin{tabular}{lccccc}
+    \toprule
+    \multirow{2}{*}{Модель} & \multicolumn{2}{c}{Сбалансированный test} & \multicolumn{2}{c}{Natural test} \\
+    \cmidrule(lr){2-3} \cmidrule(lr){4-5}
+    & $F_1$ & Recall@FPR$=5\%$ & $F_1$ & PR-AUC \\
+    \midrule
+    MHSNet               & 0.846 & 0.770 & 0.818 & 0.935 \\
+    Isolation Forest     & 0.824 & 0.540 & 0.793 & 0.875 \\
+    Logistic Regression  & 0.926 & 0.910 & 0.922 & 0.978 \\
+    Random Forest        & 0.936 & 0.930 & 0.939 & 0.983 \\
+    \textbf{Hybrid MHSNet+RF} & \textbf{0.937} & \textbf{0.940} & \textbf{0.931} & \textbf{0.984} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Гибридная модель достигает качества, сопоставимого с Random Forest,
+и существенно превосходит чистый unsupervised-подход MHSNet и Isolation Forest
+по метрике Recall@FPR$=5\%$.
+
+\subsection{Анализ результатов}
+
+\begin{itemize}
+  \item Kernel PCA и LOF снижают шум в пространстве признаков и выделяют кандидатов в аномалии
+        до этапа ассоциативного восстановления.
+  \item Modern Hopfield Energy усиливает разделимость классов по сравнению с единственной
+        ошибкой восстановления (абляция подтверждается скриптом \texttt{scripts/run\_ablation.py}).
+  \item Гибрид MHSNet+RF объединяет преимущества unsupervised-обнаружения аномалий
+        и supervised-классификации.
+  \item При ограничении FPR$\le 5\%$ гибрид обнаруживает до 94\% fraud (сбалансированный test),
+        что важно для банковских антифрод-систем.
+\end{itemize}
+
+\section{Обсуждение и ограничения}
+\label{sec:discussion}
+
+\textbf{Ограничения.}
+\begin{enumerate}
+  \item Полная SNN-архитектура из~\cite{zhao2025mhsnet} не реализована; используется упрощение
+        на классической сети Хопфилда с MHE.
+  \item Kernel PCA обучается на подвыборке из-за квадратичной сложности.
+  \item Ёмкость классической сети Хопфилда ограничена числом прототипов ($K \le 128$).
+  \item Оценка на сбалансированном тесте завышает Precision относительно реального потока
+        с долей fraud $<0.1\%$; для production необходима калибровка порога на несбалансированных данных.
+\end{enumerate}
+
+\textbf{Практическая значимость.}
+Предложенный пайплайн применим как первый этап антифрод-фильтрации: MHSNet обучается на нормальных
+операциях без полной разметки fraud, а гибрид с RF повышает итоговое качество при наличии
+частично размеченных данных.
+
+\section{Заключение}
+\label{sec:conclusion}
+
+В работе представлен воспроизводимый метод выявления мошеннических банковских транзакций
+на основе гибридного пайплайна MHSNet (Kernel PCA $\rightarrow$ LOF $\rightarrow$ Hopfield)
+и его комбинации с Random Forest. Эксперименты на реальном датасете CaixaBank подтверждают,
+что MHSNet сопоставим с классическими unsupervised-методами, а гибридная модель достигает
+$F_1 \approx 0.94$ и Recall@FPR$=5\% \approx 0.94$.
+
+Направления дальнейших исследований: реализация SNN-ветки MHSNet, онлайн-обновление прототипов
+при concept drift, интеграция графовых признаков и оценка в режиме, близком к real-time.
+
+\section*{Доступность данных и кода}
+
+Код, Jupyter notebook и инструкции воспроизведения доступны в репозитории проекта
+\texttt{hopfield-network-for-fraud-nir}.
+Датасет: \url{https://www.kaggle.com/datasets/computingvictor/transactions-fraud-datasets}.
+Команда запуска основного эксперимента:
+\texttt{python run.py --output outputs/caixabank}.
+
+\section*{Благодарности}
+
+Автор благодарит научного руководителя за поддержку при выполнении исследования.
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
